@@ -7,9 +7,6 @@ on:
   pull_request:
     paths: ["src/**", "src-tauri/**", ".github/workflows/desktop.yml"]
 
-defaults:
-  run:
-
 jobs:
   frontend:
     runs-on: windows-latest
