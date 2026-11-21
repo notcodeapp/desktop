@@ -2443,6 +2443,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "инвариант алиасов 8.3 зависит от тома/настроек runner; локальный прогон: cargo test -- --ignored short_names"]
     fn short_names_cannot_alias_excluded_long_names() {
         use std::os::windows::ffi::OsStrExt;
         #[link(name = "kernel32")]
