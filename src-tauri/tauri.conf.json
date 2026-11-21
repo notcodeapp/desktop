@@ -1,0 +1,141 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NotCode Desktop",
+  "version": "0.3.9",
+  "identifier": "dev.notcode.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "NotCode Desktop",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 960,
+        "minHeight": 640,
+        "dragDropEnabled": true,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: https://avatars.githubusercontent.com; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'",
+      "capabilities": [
+        "default"
+      ],
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: https://avatars.githubusercontent.com; font-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "notcode"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis/header.bmp",
+        "sidebarImage": "icons/nsis/sidebar.bmp",
+        "installMode": "perMachine",
+        "languages": [
+          "Russian"
+        ],
+        "displayLanguageSelector": false,
+        "template": "windows/installer-custom.nsi"
+      },
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      }
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "txt",
+          "md",
+          "json",
+          "yaml",
+          "yml",
+          "toml",
+          "ini",
+          "env"
+        ],
+        "name": "NotCode Text File",
+        "description": "Открыть текстовый файл в NotCode",
+        "role": "Editor",
+        "mimeType": "text/plain"
+      },
+      {
+        "ext": [
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "mjs",
+          "cjs"
+        ],
+        "name": "NotCode JavaScript File",
+        "description": "Открыть JavaScript-файл в NotCode",
+        "role": "Editor",
+        "mimeType": "text/javascript"
+      },
+      {
+        "ext": [
+          "py",
+          "rb",
+          "go",
+          "rs",
+          "java",
+          "kt",
+          "kts",
+          "c",
+          "h",
+          "cpp",
+          "hpp",
+          "cs",
+          "php",
+          "swift"
+        ],
+        "name": "NotCode Source File",
+        "description": "Открыть исходный файл в NotCode",
+        "role": "Editor",
+        "mimeType": "text/plain"
+      },
+      {
+        "ext": [
+          "html",
+          "htm",
+          "css",
+          "scss",
+          "xml",
+          "sql",
+          "sh",
+          "ps1",
+          "bat"
+        ],
+        "name": "NotCode Web File",
+        "description": "Открыть файл в NotCode",
+        "role": "Editor",
+        "mimeType": "text/plain"
+      }
+    ],
+    "licenseFile": "LICENSE.txt",
+    "license": "MIT"
+  }
+}
