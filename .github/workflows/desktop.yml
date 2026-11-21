@@ -1,0 +1,97 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "src-tauri/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["src/**", "src-tauri/**", ".github/workflows/desktop.yml"]
+
+defaults:
+  run:
+
+jobs:
+  frontend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: "package-lock.json"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build frontend
+        run: npm run build
+
+      - name: Design tokens check
+        run: npm run tokens:check
+
+      - name: Unit tests
+        # Локально песочница Windows блокирует spawn дочерних процессов
+        # node:test, поэтому isolation none; в CI это эквивалентно.
+        run: node --experimental-strip-types --test --test-isolation=none tests/*.test.mjs
+
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri"
+
+      - name: cargo check
+        run: cargo check --all-targets
+
+      - name: cargo test
+        run: cargo test
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [frontend, rust]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: "package-lock.json"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build NSIS bundle
+        run: npm run tauri build
+
+      - name: Rename artifact
+        shell: pwsh
+        run: |
+          $src = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          Copy-Item $src.FullName "NotCode-Desktop-${{ github.ref_name }}-x64-setup.exe"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NotCode-Desktop-*.exe
