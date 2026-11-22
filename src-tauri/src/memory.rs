@@ -20,7 +20,7 @@ fn validate(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn global_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn global_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()

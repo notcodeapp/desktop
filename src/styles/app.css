@@ -574,3 +574,8 @@ button, select { cursor: default; }
 .queue-item .icon-button { width:22px; height:22px; flex:none; }
 .queue-item .icon-button svg { width:12px; height:12px; }
 .queue-item .send-button { color:var(--colors-accent); }
+
+/* Git-центр: создание ветки в один вход. */
+.branch-create { display:flex; gap:var(--spacing-1); padding:0 var(--spacing-3) var(--spacing-2); }
+.branch-create input { flex:1; min-width:0; border:1px solid var(--colors-divider); border-radius:var(--shapes-extraSmall); background:var(--colors-background); color:inherit; padding:var(--spacing-2); font-size:var(--typography-small); outline:none; }
+.branch-create input:focus { border-color:var(--colors-accent); }

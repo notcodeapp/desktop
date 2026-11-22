@@ -606,7 +606,8 @@ fn github_proxy_config(repo: &mut Repository) -> Result<bool, String> {
 fn git_sync_impl(direction: String, approved: bool, state: &AppState) -> Result<String, String> {
     consent(approved)?;
     let args: &[&str] = match direction.as_str() {
-        "push" => &["push", "--no-verify", "--recurse-submodules=no"],
+        // -u origin HEAD: публикует и новые ветки (upstream), force не используется.
+        "push" => &["push", "--no-verify", "--recurse-submodules=no", "-u", "origin", "HEAD"],
         "pull" => &[
             "pull",
             "--ff-only",
@@ -737,7 +738,7 @@ fn git_remote_impl(state: &AppState) -> Result<Option<String>, String> {
     })
 }
 
-fn git_checkout_impl(branch: String, approved: bool, state: &AppState) -> Result<String, String> {
+fn git_checkout_impl(branch: String, create: bool, approved: bool, state: &AppState) -> Result<String, String> {
     consent(approved)?;
     if branch.is_empty()
         || branch.len() > 256
@@ -751,16 +752,29 @@ fn git_checkout_impl(branch: String, approved: bool, state: &AppState) -> Result
         .lock()
         .map_err(|_| "Project gate poisoned")?;
     let repo = Repository::open(crate::project::root(state)?)?;
-    repo.run(&["check-ref-format", "--branch", &branch])?;
-    repo.run(&["show-ref", "--verify", &format!("refs/heads/{branch}")])?;
+    if create {
+        repo.run(&["check-ref-format", "--allow-onelevel", "--branch", &branch])?;
+        let exists = repo.raw(&["show-ref", "--verify", &format!("refs/heads/{branch}")])?.success;
+        if exists {
+            return Err(format!("Ветка {branch} уже существует"));
+        }
+    } else {
+        repo.run(&["check-ref-format", "--branch", &branch])?;
+        repo.run(&["show-ref", "--verify", &format!("refs/heads/{branch}")])?;
+    }
     // No force, reset, auto-stash, remote guessing, or submodule recursion.
-    let output = repo.raw(&[
-        "checkout",
-        "--no-guess",
-        "--no-recurse-submodules",
-        &branch,
-        "--",
-    ])?;
+    let mut args = vec![
+        "checkout".to_owned(),
+        "--no-guess".to_owned(),
+        "--no-recurse-submodules".to_owned(),
+    ];
+    if create {
+        args.push("-b".to_owned());
+    }
+    args.push(branch.clone());
+    args.push("--".to_owned());
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = repo.raw(&args_ref)?;
     if !output.success {
         return output
             .checked()
@@ -822,10 +836,11 @@ pub async fn git_sync(
 #[tauri::command]
 pub async fn git_checkout(
     branch: String,
+    create: bool,
     approved: bool,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    blocking(app, move |state| git_checkout_impl(branch, approved, state)).await
+    blocking(app, move |state| git_checkout_impl(branch, create, approved, state)).await
 }
 #[tauri::command]
 pub async fn git_init(app: tauri::AppHandle) -> Result<(), String> {
@@ -843,6 +858,34 @@ pub async fn git_stage(
 #[tauri::command]
 pub async fn git_remote(app: tauri::AppHandle) -> Result<Option<String>, String> {
     blocking(app, git_remote_impl).await
+}
+#[tauri::command]
+pub async fn git_stash(direction: String, approved: bool, app: tauri::AppHandle) -> Result<String, String> {
+    blocking(app, move |state| git_stash_impl(direction, approved, state)).await
+}
+
+fn git_stash_impl(direction: String, approved: bool, state: &AppState) -> Result<String, String> {
+    consent(approved)?;
+    let args: &[&str] = match direction.as_str() {
+        "push" => &["stash", "push", "--include-untracked", "--no-verify"],
+        "pop" => &["stash", "pop", "--quiet"],
+        _ => return Err("Direction must be push or pop".into()),
+    };
+    let _gate = state
+        .project_gate
+        .lock()
+        .map_err(|_| "Project gate poisoned")?;
+    let repo = Repository::open(crate::project::root(state)?)?;
+    let output = repo.raw(args)?;
+    if !output.success {
+        let text = output.checked()?;
+        return Ok(String::from_utf8_lossy(&text).into_owned());
+    }
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
 }
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(600);

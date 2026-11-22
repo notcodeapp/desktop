@@ -156,7 +156,43 @@ function AccountVaultSection({profile, report, reloadProviders}:{profile: AuthPr
     <div className="toolbar">
       <button type="button" disabled={busy!==''} onClick={()=>{ setBusy('push-all'); void (async()=>{ try{ const list=await api.providerProfiles(); for(const p of list){ await api.vaultProviderPush(p.id); } }catch(e){report(e);} finally{ setBusy(''); } })(); }}><CloudUpload/>Отправить локальные провайдеры</button>
     </div>
+    <MemorySkillsSyncSection report={report}/>
     <ChatVaultSection report={report}/>
+  </div>;
+}
+
+/// Синк памяти агента и глобальных скиллов через аккаунт.
+function MemorySkillsSyncSection({report}:{report: Report}) {
+  const [busy,setBusy]=useState('');
+  const [done,setDone]=useState('');
+  async function run(kind:'memory'|'skills'|'pull-memory'|'pull-skills') {
+    setBusy(kind); setDone('');
+    try {
+      if (kind==='memory') setDone(`Память отправлена в аккаунт (${await api.vaultMemoryPush()} символов).`);
+      if (kind==='skills') setDone(`Скиллов отправлено: ${await api.vaultSkillsPush()}.`);
+      if (kind==='pull-memory') {
+        const r=await api.vaultMemoryPull();
+        setDone(r.updated ? 'Память обновлена из аккаунта (в аккаунте новее).' : 'Локальная память новее — ничего не перезаписано.');
+      }
+      if (kind==='pull-skills') {
+        const n=await api.vaultSkillsPull();
+        setDone(n ? `Скиллов обновлено/добавлено: ${n}.` : 'Скиллы совпадают — обновлений нет.');
+      }
+    } catch(e) { report(e); } finally { setBusy(''); }
+  }
+  return <div className="settings-section">
+    <header><Brain/><h3>Память и скиллы · аккаунт</h3></header>
+    <p className="hint">Глобальная память агента и глобальные скиллы переносятся между устройствами через аккаунт. Память из аккаунта перезаписывает локальную только если она там новее; проектные скиллы не синхронизируются.</p>
+    <div className="toolbar">
+      <button type="button" disabled={busy!==''} onClick={()=>void run('memory')} title="Отправить глобальную память в аккаунт">Память → аккаунт</button>
+      <button type="button" disabled={busy!==''} onClick={()=>void run('pull-memory')} title="Забрать память из аккаунта">Память ← аккаунт</button>
+    </div>
+    <div className="toolbar">
+      <button type="button" disabled={busy!==''} onClick={()=>void run('skills')} title="Отправить глобальные скиллы в аккаунт">Скиллы → аккаунт</button>
+      <button type="button" disabled={busy!==''} onClick={()=>void run('pull-skills')} title="Забрать скиллы из аккаунта">Скиллы ← аккаунт</button>
+    </div>
+    {busy&&<SpinnerLabel>{busy.includes('memory')?'Память…':'Скиллы…'}</SpinnerLabel>}
+    {done&&<p className="hint" role="status">{done}</p>}
   </div>;
 }
 
@@ -178,6 +214,10 @@ function ChatVaultSection({report}:{report: Report}) {
   return <div className="settings-section">
     <header><Sparkles/><h3>Чаты из аккаунта</h3></header>
     <p className="hint">Диалоги, синхронизированные с других устройств (CLI, телефон). Импорт создаёт копию чата в текущем проекте.</p>
+    <div className="toolbar">
+      <button type="button" className="primary" disabled={busy!==''} onClick={()=>{ setBusy('sync'); void (async()=>{ try{ const r=await api.vaultChatsSync(); const parts=[`отправлено ${r.pushed}`]; if(r.pulled)parts.push(`скачано ${r.pulled}`); if(r.skippedLarge)parts.push(`пропущено больших ${r.skippedLarge}`); if(r.skippedExisting)parts.push(`уже были ${r.skippedExisting}`); setDone(`Синк чатов: ${parts.join(', ')}.`); await refresh(); }catch(e){ report(e); } finally{ setBusy(''); } })(); }}><CloudUpload/>Синхронизировать чаты</button>
+    </div>
+    <p className="hint">Синхронизация отправляет все локальные диалоги в аккаунт (видны на телефоне и в CLI) и скачивает новые чаты аккаунта в текущий проект. Существующие чаты не перезаписываются.</p>
     {!chats&&<SpinnerLabel>Загружаю…</SpinnerLabel>}
     {chats&&!chats.length&&<p className="hint">В аккаунте нет чатов.</p>}
     {chats?.map(chat=><div key={chat.vaultId} className="provider-row">

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { FileEntry, FileHistoryEntry, Project, ProviderProfile, SearchHit, Session, Message, GitStatus, GitCommit, CliStatus, CliImportPreview, BridgeStatus, McpConfig, McpTool, TerminalInfo, GithubRepo, AuditEntry, Skill, VoiceStatus, ActivityStats, PlanStep, ReplaceResult } from './types';
+import type { FileEntry, FileHistoryEntry, Project, ProviderProfile, SearchHit, Session, Message, GitStatus, GitCommit, CliStatus, CliImportPreview, BridgeStatus, McpConfig, McpTool, TerminalInfo, GithubRepo, AuditEntry, Skill, VoiceStatus, ActivityStats, PlanStep, ReplaceResult, VaultChatsSyncResult } from './types';
 
 export interface AuthProfile { username: string; avatarUrl: string; expiresAt: string }
 export interface OpencodeModel { id: string; name: string; ctx: number; free: boolean; description: string }
@@ -55,6 +55,11 @@ export const api = {
   vaultProvidersList: () => call<{ id: string; name: string; baseUrl: string; models: string[]; key: string | null; updatedAt: number }[]>('vault_providers_list'),
   vaultProviderPush: (id: string) => call<void>('vault_provider_push', { id }),
   vaultProviderImport: (args: { id: string; name: string; baseUrl: string; models: string[]; key: string | null }) => call<void>('vault_provider_import', args),
+  vaultChatsSync: () => call<VaultChatsSyncResult>('vault_chats_sync'),
+  vaultMemoryPush: () => call<number>('vault_memory_push'),
+  vaultMemoryPull: () => call<{ updated: boolean; remoteAt: number; localAt: number }>('vault_memory_pull'),
+  vaultSkillsPush: () => call<number>('vault_skills_push'),
+  vaultSkillsPull: () => call<number>('vault_skills_pull'),
   cliStatus: (provider: string) => call<CliStatus>('cli_status', { provider }),
   cliModels: (provider: string) => call<string[]>('cli_models', { provider }),
   cliImportPreview: () => call<CliImportPreview | null>('cli_import_preview'),
@@ -76,7 +81,8 @@ export const api = {
   gitBranches: () => call<string[]>('git_branches'),
   gitCommit: (message: string, approved: boolean) => call<string>('git_commit', { message, approved }),
   gitSync: (direction: string, approved: boolean) => call<string>('git_sync', { direction, approved }),
-  gitCheckout: (branch: string, approved: boolean) => call<string>('git_checkout', { branch, approved }),
+  gitCheckout: (branch: string, create: boolean, approved: boolean) => call<string>('git_checkout', { branch, create, approved }),
+  gitStash: (direction: string, approved: boolean) => call<string>('git_stash', { direction, approved }),
   gitInit: () => call<void>('git_init'),
   gitStage: (paths: string[], all: boolean, unstage: boolean) => call<void>('git_stage', { paths, all, unstage }),
   gitRemote: () => call<string | null>('git_remote'),

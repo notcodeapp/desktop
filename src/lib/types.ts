@@ -3,6 +3,7 @@ export interface FileEntry { name: string; path: string; isDir: boolean }
 export interface FileHistoryEntry { timestamp: number; size: number }
 export interface SearchHit { path: string; line: number; preview: string }
 export interface ReplaceResult { filesChanged: number; replacements: number; skipped: number }
+export interface VaultChatsSyncResult { pushed: number; pulled: number; skippedLarge: number; skippedExisting: number }
 export interface FileTab { path: string; content: string; saved: string; external?: boolean }
 export interface Session { id: string; title: string; provider: string; model: string; updatedAt: number; externalId?: string | null }
 export interface CliStatus { provider: string; available: boolean; path: string; version: string; error: string }

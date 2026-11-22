@@ -200,6 +200,7 @@ pub fn init_and_run() {
             git::git_commit,
             git::git_sync,
             git::git_checkout,
+            git::git_stash,
             git::git_clone,
             git::git_init,
             git::git_stage,

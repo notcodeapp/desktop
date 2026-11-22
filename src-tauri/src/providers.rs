@@ -654,6 +654,324 @@ pub struct VaultChatInfo {
     pub updated_at: i64,
 }
 
+// ---- Синк памяти и скиллов через аккаунт (kind=memory / kind=skill) ----------
+
+fn modified_at_ms(path: &std::path::Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+async fn vault_put_item(auth: &str, api_base: &str, kind: &str, id: &str, updated_at: i64, data: serde_json::Value) -> Result<(), String> {
+    let payload = serde_json::json!({ "items": [{ "kind": kind, "id": id, "updatedAt": updated_at, "data": data }] });
+    let response = worker_client()?
+        .put(format!("{}/api/vault", api_base))
+        .header("Authorization", auth)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка сервера: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Сессия недействительна; войдите заново".into());
+    }
+    if !status.is_success() {
+        return Err(body.get("error").and_then(serde_json::Value::as_str).unwrap_or("Ошибка сервера").into());
+    }
+    Ok(())
+}
+
+async fn vault_get_items(auth: &str, api_base: &str) -> Result<Vec<serde_json::Value>, String> {
+    let response = worker_client()?
+        .get(format!("{}/api/vault", api_base))
+        .header("Authorization", auth)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка сервера: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Сессия недействительна; войдите заново".into());
+    }
+    if !status.is_success() {
+        return Err(body.get("error").and_then(serde_json::Value::as_str).unwrap_or("Ошибка сервера").into());
+    }
+    Ok(body.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default())
+}
+
+/// Память агента (глобальная memory.md) → аккаунт.
+#[tauri::command]
+pub async fn vault_memory_push(app: AppHandle) -> Result<usize, String> {
+    let auth = session_bearer()?;
+    let path = crate::memory::global_path(&app)?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err("Локальная память пуста — отправлять нечего".into());
+    }
+    vault_put_item(&auth, &crate::auth::api_base(), "memory", "global", modified_at_ms(&path), serde_json::json!({ "text": text })).await?;
+    Ok(text.len())
+}
+
+/// Память из аккаунта → локальная (перезапись, если в аккаунте новее).
+#[tauri::command]
+pub async fn vault_memory_pull(app: AppHandle) -> Result<serde_json::Value, String> {
+    let auth = session_bearer()?;
+    let items = vault_get_items(&auth, &crate::auth::api_base()).await?;
+    let item = items.iter().find(|i| {
+        i.get("kind").and_then(serde_json::Value::as_str) == Some("memory")
+            && i.get("id").and_then(serde_json::Value::as_str) == Some("global")
+    }).ok_or("В аккаунте нет памяти")?;
+    let remote_at = item.get("updatedAt").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let text = item.pointer("/data/text").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+    if text.trim().is_empty() || text.len() > 32 * 1024 {
+        return Err("Память в аккаунте пуста или слишком большая".into());
+    }
+    let path = crate::memory::global_path(&app)?;
+    let local_at = modified_at_ms(&path);
+    let updated = remote_at > local_at;
+    if updated {
+        std::fs::create_dir_all(path.parent().ok_or("Memory path has no parent")?).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    }
+    Ok(serde_json::json!({ "updated": updated, "remoteAt": remote_at, "localAt": local_at }))
+}
+
+/// Глобальные скиллы → аккаунт (проектные не синхронизируются).
+#[tauri::command]
+pub async fn vault_skills_push(app: AppHandle) -> Result<usize, String> {
+    let auth = session_bearer()?;
+    let dir = crate::skills::global_dir(&app)?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+            let Ok(raw) = std::fs::read_to_string(&path) else { continue };
+            let Ok(skill) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+            let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_owned();
+            if id.is_empty() || id.len() > 64 { continue; }
+            items.push(serde_json::json!({
+                "kind": "skill", "id": id, "updatedAt": modified_at_ms(&path),
+                "data": skill,
+            }));
+        }
+    }
+    let count = items.len();
+    if count == 0 {
+        return Err("Глобальных скиллов нет — отправлять нечего".into());
+    }
+    let payload = serde_json::json!({ "items": items });
+    let response = worker_client()?
+        .put(format!("{}/api/vault", crate::auth::api_base()))
+        .header("Authorization", auth)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка сервера: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Сессия недействительна; войдите заново".into());
+    }
+    if !status.is_success() {
+        return Err(body.get("error").and_then(serde_json::Value::as_str).unwrap_or("Ошибка сервера").into());
+    }
+    Ok(count)
+}
+
+/// Скиллы из аккаунта → глобальные: новые добавляются, у существующих
+/// более новая версия из аккаунта перезаписывает локальную.
+#[tauri::command]
+pub async fn vault_skills_pull(app: AppHandle) -> Result<usize, String> {
+    let auth = session_bearer()?;
+    let items = vault_get_items(&auth, &crate::auth::api_base()).await?;
+    let dir = crate::skills::global_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut updated = 0usize;
+    for item in &items {
+        if item.get("kind").and_then(serde_json::Value::as_str) != Some("skill") { continue; }
+        let id = item.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+        if id.is_empty() || id.len() > 64 { continue; }
+        let data = item.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        if data.get("name").and_then(serde_json::Value::as_str).unwrap_or("").trim().is_empty() { continue; }
+        let remote_at = item.get("updatedAt").and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let path = dir.join(format!("{}.json", id));
+        let local_at = modified_at_ms(&path);
+        if path.exists() && local_at >= remote_at { continue; }
+        let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        updated += 1;
+    }
+    Ok(updated)
+}
+
+/// Результат полного синка чатов с аккаунтом.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultChatsSyncResult {
+    pub pushed: usize,
+    pub pulled: usize,
+    pub skipped_large: usize,
+    pub skipped_existing: usize,
+}
+
+const CHAT_SYNC_MAX_BYTES: usize = 56 * 1024; // до лимита 64 КиБ на элемент vault
+const CHAT_SYNC_MAX_CHATS: usize = 200;
+
+/// Полный синк чатов: локальные чаты (всех проектов) → аккаунт, новые из
+/// аккаунта → текущий проект. Формат совместим с CLI (messages[{role,content}])
+/// и Android (items[{role,text,id}]) — пишем messages, читаем оба представления.
+#[tauri::command]
+pub async fn vault_chats_sync(app: AppHandle, state: State<'_, AppState>) -> Result<VaultChatsSyncResult, String> {
+    let auth = session_bearer()?;
+    let api_base = crate::auth::api_base();
+
+    // ---- PUSH: все локальные чаты → аккаунт ----
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut skipped_large = 0usize;
+    {
+        let db = state.db.lock().map_err(|_| "Database lock poisoned")?;
+        let mut stmt = db.prepare(
+            "SELECT s.id, s.title, s.model, s.updated_at, (SELECT IFNULL(GROUP_CONCAT(m.content, char(30)), '') FROM messages m WHERE m.session_id = s.id) AS joined FROM sessions s ORDER BY s.updated_at DESC LIMIT 200;"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?, row.get::<_, String>(4)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+        let sessions: Vec<(String, String, String, i64)> = rows
+            .filter_map(|row| row.ok())
+            .map(|(id, title, model, updated_at, _joined)| (id, title, model, updated_at))
+            .collect();
+        // Роли настоящие: отдельный запрос по каждой сессии (лимит 200).
+        let mut msg_stmt = db.prepare(
+            "SELECT role, content FROM messages WHERE session_id = ?1 ORDER BY created_at, rowid LIMIT 500;"
+        ).map_err(|e| e.to_string())?;
+        for (id, title, model, updated_at) in sessions {
+            let message_rows = msg_stmt.query_map([&id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }).map_err(|e| e.to_string())?;
+            let mut messages: Vec<serde_json::Value> = Vec::new();
+            for row in message_rows {
+                let (role, content) = match row {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                if content.is_empty() { continue; }
+                messages.push(serde_json::json!({ "role": role, "content": content }));
+            }
+            if messages.is_empty() { continue; }
+            let data = serde_json::json!({ "name": title, "model": model, "messages": messages });
+            let bytes = serde_json::to_string(&data).map_err(|e| e.to_string())?.len();
+            if bytes > CHAT_SYNC_MAX_BYTES {
+                skipped_large += 1;
+                continue;
+            }
+            items.push(serde_json::json!({ "kind": "chat", "id": id, "updatedAt": updated_at, "data": data }));
+            if items.len() >= CHAT_SYNC_MAX_CHATS { break; }
+        }
+    }
+    let pushed = items.len();
+    if pushed > 0 {
+        let payload = serde_json::json!({ "items": items });
+        let response = worker_client()?
+            .put(format!("{}/api/vault", api_base))
+            .header("Authorization", auth.clone())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("Ошибка сервера: {e}"))?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err("Сессия недействительна; войдите заново".into());
+        }
+        if !status.is_success() {
+            return Err(body.get("error").and_then(serde_json::Value::as_str).unwrap_or("Ошибка сервера").into());
+        }
+    }
+
+    // ---- PULL: новые чаты аккаунта → текущий проект ----
+    let list = worker_client()?
+        .get(format!("{}/api/vault", api_base))
+        .header("Authorization", auth)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка сервера: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let remote_items = list.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+
+    let mut pulled = 0usize;
+    let mut skipped_existing = 0usize;
+    {
+        let mut to_import: Vec<(String, String, String, Vec<(String, String)>)> = Vec::new();
+        {
+            let db = state.db.lock().map_err(|_| "Database lock poisoned")?;
+            for item in &remote_items {
+                if item.get("kind").and_then(serde_json::Value::as_str) != Some("chat") { continue; }
+                let id = item.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+                if id.is_empty() || id.len() > 128 { continue; }
+                let exists: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE id = ?1", [&id], |row| row.get(0),
+                ).unwrap_or(0);
+                if exists > 0 { skipped_existing += 1; continue; }
+                let data = item.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                let name = data.get("name").and_then(serde_json::Value::as_str).unwrap_or("чат из аккаунта").to_owned();
+                let model = data.get("model").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+                // messages[] (CLI/Desktop) или items[] (Android) → (role, text).
+                let mut messages: Vec<(String, String)> = Vec::new();
+                if let Some(list) = data.get("messages").and_then(serde_json::Value::as_array) {
+                    for m in list {
+                        let role = m.get("role").and_then(serde_json::Value::as_str).unwrap_or("user").to_owned();
+                        let content = m.get("content").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+                        if !content.is_empty() { messages.push((role, content)); }
+                    }
+                }
+                if messages.is_empty() {
+                    if let Some(list) = data.get("items").and_then(serde_json::Value::as_array) {
+                        for m in list {
+                            let role = m.get("role").and_then(serde_json::Value::as_str).unwrap_or("user").to_owned();
+                            let text = m.get("text").and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+                            if !text.is_empty() { messages.push((role, text)); }
+                        }
+                    }
+                }
+                if messages.is_empty() || messages.len() > 500 { continue; }
+                to_import.push((id, name, model, messages));
+            }
+        }
+        for (id, name, model, messages) in to_import {
+            let _ = &id;
+            let model = if model.is_empty() { "imported".to_owned() } else { model };
+            // session_create сам захватывает project_gate — не держим его здесь.
+            let session = match crate::store::session_create("compatible".into(), model, state.clone()) {
+                Ok(s) => s,
+                Err(_) => { skipped_existing += 1; continue; }
+            };
+            let db = state.db.lock().map_err(|_| "Database lock poisoned")?;
+            db.execute("UPDATE sessions SET title = ?1 WHERE id = ?2", params![name, session.id]).map_err(|e| e.to_string())?;
+            for (index, (role, content)) in messages.iter().enumerate() {
+                if !["user", "assistant", "system"].contains(&role.as_str()) { continue; }
+                if content.len() > crate::store::MAX_CONTENT { continue; }
+                db.execute(
+                    "INSERT INTO messages(id,session_id,role,content,created_at) VALUES(?1,?2,?3,?4,?5)",
+                    params![uuid::Uuid::new_v4().to_string(), session.id, role, content, crate::store::now() + index as i64],
+                ).map_err(|e| e.to_string())?;
+            }
+            drop(db);
+            pulled += 1;
+        }
+    }
+    Ok(VaultChatsSyncResult { pushed, pulled, skipped_large, skipped_existing })
+}
+
 /// Список чатов из хранилища аккаунта (для импорта).
 #[tauri::command]
 pub async fn vault_chats_list(app: AppHandle) -> Result<Vec<VaultChatInfo>, String> {
